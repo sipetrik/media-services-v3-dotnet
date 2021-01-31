@@ -22,5 +22,8 @@ namespace HighAvailability.Models
         /// Azure Media Services instance account name
         /// </summary>
         public string AccountName { get; set; }
+
+        public string AADApplicationId { get; set; }
+        public string AADApplicationSecret { get; set; }
     }
 }

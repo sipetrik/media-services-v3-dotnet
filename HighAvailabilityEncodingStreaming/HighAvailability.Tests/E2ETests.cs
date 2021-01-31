@@ -12,6 +12,7 @@ namespace HighAvailability.Tests
     using HighAvailability.Models;
     using HighAvailability.Services;
     using Microsoft.Azure.Cosmos.Table;
+    using Microsoft.Azure.Management.Media;
     using Microsoft.Azure.Management.Media.Models;
     using Microsoft.Extensions.Logging;
     using Microsoft.VisualStudio.TestTools.UnitTesting;
@@ -71,7 +72,7 @@ namespace HighAvailability.Tests
         public static async Task Initialize(TestContext _)
         {
             // Set the correct keyvault name
-            configService = new E2ETestConfigService("<enter keyvault name>");
+            configService = new E2ETestConfigService("sipetrikha-KeyVault");
             await configService.LoadConfigurationAsync().ConfigureAwait(false);
 
             var storageAccount = CloudStorageAccount.Parse(configService.TableStorageAccountConnectionString);
@@ -111,48 +112,60 @@ namespace HighAvailability.Tests
         [TestMethod]
         public async Task SubmitTestRequests()
         {
-            var jobOutputStatusStorageService = new JobOutputStatusStorageService(jobOutputStatusTableStorageService);
-            var mediaServiceInstanceHealthStorageService = new MediaServiceInstanceHealthStorageService(mediaServiceInstanceHealthTableStorageService);
-            var mediaServiceInstanceHealthService = new MediaServiceInstanceHealthService(mediaServiceInstanceHealthStorageService, jobOutputStatusStorageService, mediaServiceCallHistoryStorageService, configService);
-            var mediaServiceInstanceFactory = new MediaServiceInstanceFactory(mediaServiceCallHistoryStorageService, configService);
-
-            foreach (var config in configService.MediaServiceInstanceConfiguration)
+            try
             {
-                var client = mediaServiceInstanceFactory.GetMediaServiceInstance(config.Value.AccountName, Mock.Of<ILogger>());
-                client.LongRunningOperationRetryTimeout = 2;
 
-                await MediaServicesHelper.EnsureTransformExists(
-                    client,
-                    config.Value.ResourceGroup,
-                    config.Value.AccountName,
-                    transformName,
-                    new BuiltInStandardEncoderPreset(EncoderNamedPreset.AdaptiveStreaming)).ConfigureAwait(false);
+                var jobOutputStatusStorageService = new JobOutputStatusStorageService(jobOutputStatusTableStorageService);
+                var mediaServiceInstanceHealthStorageService = new MediaServiceInstanceHealthStorageService(mediaServiceInstanceHealthTableStorageService);
+                var mediaServiceInstanceHealthService = new MediaServiceInstanceHealthService(mediaServiceInstanceHealthStorageService, jobOutputStatusStorageService, mediaServiceCallHistoryStorageService, configService);
+                var mediaServiceInstanceFactory = new MediaServiceInstanceFactory(mediaServiceCallHistoryStorageService, configService);
 
-                await mediaServiceInstanceHealthService.CreateOrUpdateAsync(new MediaServiceInstanceHealthModel
+                foreach (var config in configService.MediaServiceInstanceConfiguration)
                 {
-                    MediaServiceAccountName = config.Value.AccountName,
-                    HealthState = InstanceHealthState.Healthy,
-                    LastUpdated = DateTime.UtcNow,
-                    IsEnabled = true
-                },
-                    Mock.Of<ILogger>()).ConfigureAwait(false);
+                    var client = mediaServiceInstanceFactory.GetMediaServiceInstance(config.Value.AccountName, Mock.Of<ILogger>());
 
-                await MediaServicesHelper.EnsureContentKeyPolicyExists(
-                    client,
-                    config.Value.ResourceGroup,
-                    config.Value.AccountName,
-                    configService.ContentKeyPolicyName,
-                    configService.GetClearKeyStreamingKey(),
-                    configService.TokenIssuer,
-                    configService.TokenAudience).ConfigureAwait(false);
+                    await mediaServiceInstanceHealthService.CreateOrUpdateAsync(new MediaServiceInstanceHealthModel
+                    {
+                        MediaServiceAccountName = config.Value.AccountName,
+                        HealthState = InstanceHealthState.Healthy,
+                        LastUpdated = DateTime.UtcNow,
+                        IsEnabled = true
+                    },
+                        Mock.Of<ILogger>()).ConfigureAwait(false);
+
+                    if (config.Value.AccountName.Equals("sipetrikmedia", StringComparison.InvariantCultureIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    await MediaServicesHelper.EnsureTransformExists(
+                        client,
+                        config.Value.ResourceGroup,
+                        config.Value.AccountName,
+                        transformName,
+                        new BuiltInStandardEncoderPreset(EncoderNamedPreset.AdaptiveStreaming)).ConfigureAwait(false);
+ 
+                    await MediaServicesHelper.EnsureContentKeyPolicyExists(
+                        client,
+                        config.Value.ResourceGroup,
+                        config.Value.AccountName,
+                        configService.ContentKeyPolicyName,
+                        configService.GetClearKeyStreamingKey(),
+                        configService.TokenIssuer,
+                        configService.TokenAudience).ConfigureAwait(false);
+                }
+
+                var target = new JobRequestStorageService(jobRequestQueue);
+                var uniqueness = Guid.NewGuid().ToString().Substring(0, 13);
+
+                for (var i = 0; i < 10; i++)
+                {
+                    Assert.IsNotNull(await target.CreateAsync(GenerateJobRequestModel(i, uniqueness), Mock.Of<ILogger>()).ConfigureAwait(false));
+                }
             }
-
-            var target = new JobRequestStorageService(jobRequestQueue);
-            var uniqueness = Guid.NewGuid().ToString().Substring(0, 13);
-
-            for (var i = 0; i < 10; i++)
+            catch (Exception e)
             {
-                Assert.IsNotNull(await target.CreateAsync(GenerateJobRequestModel(i, uniqueness), Mock.Of<ILogger>()).ConfigureAwait(false));
+                var s = e.ToString();
             }
         }
 
@@ -170,10 +183,10 @@ namespace HighAvailability.Tests
 
             // Add job input for this test
             var input = new JobInputHttp(
-                                   baseUri: "<Enter URL>",
-                                   files: new List<string> { "<Enter Filename>" },
-                                   label: "input1"
-                                   );
+                                    baseUri: "https://nimbuscdn-nimbuspm.streaming.mediaservices.windows.net/2b533311-b215-4409-80af-529c3e853622/",
+                                    files: new List<String> { "Ignite-short.mp4" },
+                                    label: "input1"
+                                    );
 
             var request = new JobRequestModel
             {

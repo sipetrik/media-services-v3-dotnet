@@ -9,6 +9,7 @@ namespace HighAvailability.Factories
     using Microsoft.Extensions.Logging;
     using System;
     using System.Linq;
+    using System.Net;
     using System.Net.Http;
     using System.Threading;
     using System.Threading.Tasks;
@@ -54,10 +55,17 @@ namespace HighAvailability.Factories
         /// <returns></returns>
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
-            HttpResponseMessage response;
+            HttpResponseMessage response = null;
+            HttpStatusCode responseStatusCode = HttpStatusCode.InternalServerError;
+            TaskCanceledException taskCanceledException = null;
             try
             {
                 response = await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
+                responseStatusCode = response.StatusCode;
+            }
+            catch (TaskCanceledException e)
+            {
+                taskCanceledException = e;
             }
             catch (Exception)
             {
@@ -67,7 +75,7 @@ namespace HighAvailability.Factories
             }
 
             // any 5xx errors triggers reconnect to Media Services API
-            if ((int)response.StatusCode > 499)
+            if ((int)responseStatusCode > 499)
             {
                 this.mediaServiceInstanceFactory.ResetMediaServiceInstance();
             }
@@ -101,7 +109,7 @@ namespace HighAvailability.Factories
                 MediaServiceAccountName = accountName,
                 CallInfo = $"{request.Method} {callInfo}",
                 EventTime = DateTime.UtcNow,
-                HttpStatus = response.StatusCode
+                HttpStatus = responseStatusCode
             };
 
             // In order to keep this operation idempotent, there is no need to fail even if recording call data fails. Otherwise when request is resubmitted it can result in data duplication.
@@ -128,6 +136,11 @@ namespace HighAvailability.Factories
                 }
             }
             while (retryCount > 0);
+
+            if (taskCanceledException != null)
+            {
+                throw taskCanceledException;
+            }
 
             return response;
         }

@@ -7,8 +7,11 @@ namespace HighAvailability.Factories
     using Microsoft.Azure.Management.Media;
     using Microsoft.Azure.Services.AppAuthentication;
     using Microsoft.Extensions.Logging;
+    using Microsoft.IdentityModel.Clients.ActiveDirectory;
     using Microsoft.Rest;
+    using Microsoft.Rest.Azure.Authentication;
     using System;
+    using System.Collections.Generic;
     using System.Net.Http;
 
     /// <summary>
@@ -27,9 +30,9 @@ namespace HighAvailability.Factories
         private readonly IMediaServiceCallHistoryStorageService mediaServiceCallHistoryStorageService;
 
         /// <summary>
-        /// Single Azure Media Client instance that is used for all calls
+        /// List of Azure Media Client instances
         /// </summary>
-        private IAzureMediaServicesClient azureMediaServicesClient;
+        private IDictionary<string, IAzureMediaServicesClient> azureMediaServicesClientDictionary = new Dictionary<string, IAzureMediaServicesClient>();
 
         /// <summary>
         /// Object used to sync access to azureMediaServicesClient
@@ -69,24 +72,36 @@ namespace HighAvailability.Factories
 
             lock (this.azureMediaServicesClientLockObject)
             {
-                if (this.azureMediaServicesClient == null || this.resetRequested)
+                if (this.azureMediaServicesClientDictionary.ContainsKey(accountName) && !this.resetRequested)
                 {
-                    var azureServiceTokenProvider = new AzureServiceTokenProvider();
-                    var accessToken = azureServiceTokenProvider.GetAccessTokenAsync("https://management.azure.com").GetAwaiter().GetResult();
-                    ServiceClientCredentials credentials = new TokenCredentials(accessToken);
-
-                    // Establish a connection to Media Services.
-                    this.azureMediaServicesClient = new AzureMediaServicesClient(credentials,
-                        new DelegatingHandler[] { new CallHistoryHandler(this.mediaServiceCallHistoryStorageService, this, logger) })
-                    {
-                        SubscriptionId = this.configService.MediaServiceInstanceConfiguration[accountName].SubscriptionId
-                    };
-
-                    this.resetRequested = false;
+                    return this.azureMediaServicesClientDictionary[accountName];
                 }
-            }
 
-            return this.azureMediaServicesClient;
+                var settings = new ActiveDirectoryServiceSettings
+                {
+                    AuthenticationEndpoint = new Uri("https://login.windows-ppe.net/"),
+                    TokenAudience = new Uri("https://management.core.windows.net/"),
+                    ValidateAuthority = true
+                };
+
+                var credentials = ApplicationTokenProvider.LoginSilentAsync(
+                    domain: "38bea1c0-7aaa-4e07-a418-edf29e6056a4",
+                    credential: new ClientCredential(
+                        this.configService.MediaServiceInstanceConfiguration[accountName].AADApplicationId,
+                        this.configService.MediaServiceInstanceConfiguration[accountName].AADApplicationSecret),
+                    settings: settings).GetAwaiter().GetResult();
+
+                // Establish a connection to Media Services.
+                this.azureMediaServicesClientDictionary[accountName] = new AzureMediaServicesClient(new Uri("https://api-dogfood.resources.windows-int.net/"), credentials,
+                    new DelegatingHandler[] { new CallHistoryHandler(this.mediaServiceCallHistoryStorageService, this, logger) })
+                {
+                    SubscriptionId = this.configService.MediaServiceInstanceConfiguration[accountName].SubscriptionId
+                };
+
+                this.resetRequested = false;
+
+                return this.azureMediaServicesClientDictionary[accountName];
+            }
         }
 
         /// <summary>
